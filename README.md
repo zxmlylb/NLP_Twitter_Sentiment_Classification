@@ -5,7 +5,8 @@ The research question we want to address using random forest is: Can I predict w
 
 For example, certain negative tweets would be very likely to include certain words that best categarizes the sentiments, and thus using a decision tree to predict the sentiment help identify which words best distinguish between the positive and negative sentiment by making splits in the trees. 
 
-The Random Forest Model
+## The Random Forest Model
+
 After final data manipulation, we can finally train random forest model. The model is trained using the caret library, which allows us to select the model and its tuning parameters in an easy fashion. We decide to evaluate our model using specificity and false discovery rate. In our sentiment classification scenario, specificity measures how well our model can identify positive emotion tweets and false discovery rate measure our model’s performance on classifying negative emotion tweets.Finally, we also added a computational time parameter as we want to train our model within a reasonable time. So, eventually we want our classification random forest to have high specificity, low false discovery rate and reasonable computation time. Considering the number of words in a given tweets in trimmed after our pre-process, we decide to limit our mtry value range from 1 to 20 and our minimum node size from 1 to 5.
 
 We selected “ranger” package to implement the random forest algorithm. The “ranger” method allows us to tune three model parameters mtry, splitrule, and minimum node size. The mtry parameter allow us to determine the number of randomly selected predictors in each tree. The minimum node size allow us to determine the complexity of each individual tree and we fixed the split rule parameter for classification to “gini”.
