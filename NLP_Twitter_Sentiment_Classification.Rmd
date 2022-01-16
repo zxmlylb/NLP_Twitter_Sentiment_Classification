@@ -1,0 +1,207 @@
+---
+title: "HW3 - COVID-19 Sentiment Classification with Random Forest"
+output:
+  html_document:
+    theme: united
+    df_print: paged
+    toc: yes
+autor: Bo Liu & Steven Shi
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(tidytext)
+library(caret)
+library(doParallel)
+library(gridExtra)
+```
+
+```{r read data}
+covid.tweets <- read_csv("data/Corona_NLP_train.csv")
+```
+
+### Research Question
+
+The research question we want to address using random forest is: Can I predict whether the coronavirus tweets considered extremely positive or extremely negative. This question is important, because it allows for the detection of extremely negative and flamatory tweets that are related to coronavirus and help caution the public about the validity of such tweets in getting information about covid. A random forest is practically meaningful because it  mimics the human cognitive process and behavior of speaking on tweeter. 
+
+For example, certain negative tweets would be very likely to include certain words that best categarizes the sentiments, and thus using a decision tree to predict the sentiment help identify which words best distinguish between the positive and negative sentiment by making splits in the trees. We now give a quick look at a specific COVID-19 tweet that is labeled with negative sentiment:
+
+```{r example}
+negative.example <- covid.tweets %>% filter(ScreenName == 48755)
+negative.example$OriginalTweet
+```
+
+Negative sentiment during the pandemic can manifest in many different forms. In this example tweet, the writer is complaining about the "empty food stock problem". While with previous social knowledge, we could recognize the emotion through the use of modal verbs like "litteraly" (a misspelled word too), can we recognize the same emotion just by looking at patterns in the data? And further could be predict negative emotions from given a set of tweets send by different users under different circumstances in the pandemic? Is it possible to know what words create the most impact on reader's perspection of the emotion in a tweet?
+
+Decision trees can predict outcomes with high complexity and high variance. For example, if our data set has a few tweets that are not considered not negative tweets, tree models could be greatly influenced by the outliers that produce a high variance in prediction.By bagging the bootstrapped trees and randomly select predictors in our data set, we further increase the accuracy of tree model and resolve the issue of high variance in each tree as long as the each tree in the forest has a accuracy better than random guessing and not highly correlated with each other. Therefore, random forest is practically meaningful, because it has a low bias in predicting complex bahavior while it attempts to address the high variance in each decision tree through bootstrapping, bagging, building uncorrelated trees.
+
+### Random Forest Overview
+
+Random forest help answer whether a tweet is considered extremely negative or positive, by considering the words each tweet contains. 
+
+```{r tweet example 2}
+negative.example <- covid.tweets %>% filter(ScreenName == 48780)
+negative.example$OriginalTweet
+```
+
+The random forest start its prediction by building decision trees using individual words in the tweets as input. Decision trees considers the best binary splits of predictors that best distinguish the positive and negative sentiments. As shown by the example tweet, if the word "unlawful" appear in one tweet and the occurrence of this word most likely categorize the negative sentiment related to coronavirus, then the decision trees would make a split and predict that whenever a "unlawful" occurs in a tweet, it will predict the negative sentiment. In the next step, the trees will continue to find the best split predictors and values in order to form the most homogeneity after the each split. This often means finding predictors that best categorizes a certain target, in our case could be words like "panicky", "breaking into", "crisis" ...
+
+The splitting would eventually stop when the decision tree reaches its threshold of manually-set-up tuning parameters. These parameters could include minimum number of observations existed in a split(node) and the minimum cp value(meaning how much cost can the trees to bear when adding a new split). While building decision trees introduces a very low bias way in predicting complex behavior that is whether a tweet exist negative or positive sentiment, using one tree that is build from a single dataset could have a high variance because prediction would change if we trained it on different data and the complexity of the tree model could be due to the random outliers. Therefore, in order to  maintain the high complexity of our model while decreasing the problem of high variance in decision trees, random forest  builds decision trees from a randomly selected subset of the original dataset by considering only a certain combination of variables in each split. After building many new decision trees from subsets of data(a process known as bootstrapping), the forest will take an average of all the predictions each boostrapped tree makes(a process known as bagging). The forest will aggregate the  outcome each trees has predicted. As long as the accuracy of each tree is higher than the random guessing and each boostrapped trees are not significantly correlated (meaning they are built up using uncorrelated dataset and with different numbers of features considered for splitting ). With enough trees built in the forest, the accuracy of this forest will steady increase and eventually resolve the problems of high variance in the case of a single decision tree. 
+
+The forest helps answer whether a tweet contains extremely positive or negative sentiment because it avoids the overfitting of using just the biased training dataset itself. When it tries to predict the sentiment of a new testing dataset, it is therefore less likely to carry out the inherent errors that was trained in the one decision and it would reaches a higher accuracy.
+
+### Data Processing
+
+Our test data is obtained from the Kaggle (https://www.kaggle.com/datatattle/covid-19-nlp-text-classification), covid 19 text classification dataset. The tweets is pulled from tweeter and then manually labeled into 5 categories. In training our random forest model, we have selected a subset of the data and two opposite emotional tags, extremely postive and extremely negative.
+Several data pre-processing steps are involved before we could actually apply the random forest model. Specifically, we need to select meaningful words from a given tweet, excluding punctuation, special symbols, or tweeter specific symbols that does not convey any meaning. Words like "gt" and "amp" indicate specific symbols in a tweet and therefore doesn't contain real meanings. Steps are also done to exclude common words from the tweet data. This exclusion is build on the idea that if both tweets of positive and negative emotion use words like "it's", "I", "he", then using these common words as predictors will not effectively help us separate negative tweets and positive tweets. 
+
+```{r read data and EDA, include=FALSE}
+# trim the good words
+extreme.tweets <- covid.tweets %>% 
+  filter(Sentiment == "Extremely Positive"|Sentiment == "Extremely Negative") %>% 
+  mutate(ISnegative = case_when(Sentiment=="Extremely Positive" ~ 0,
+                              Sentiment == "Extremely Negative"~ 1)) %>% 
+  mutate(ISnegative = factor(ISnegative))
+
+clean.tweets <-  extreme.tweets %>%
+  select(ScreenName, OriginalTweet, ISnegative) %>%
+  unnest_tokens(input = "OriginalTweet",
+                output = "word") %>%
+  anti_join(stop_words) %>% 
+  count(ScreenName, word, ISnegative) 
+
+clean.tweets <- clean.tweets %>% 
+  filter(word!="gt" & word!="amp")
+```
+One drawback of using every word as an indicator is the excessive number of columns in the training dataset. Since the training data would be a sparse matrix filled with mostly zeros as every individual tweet only contain a very small subset of the entire set of words. Therefore, in the following section of the code we perform some data triming so that only words that appeared 20 or more times are selected as predictor features. 
+```{r data triming}
+#Let's trim words with less than 20 uses total.
+good.words <- clean.tweets %>%
+  group_by(word) %>%
+  summarize(sum = sum(n)) %>%
+  filter(sum >= 20) %>% 
+  arrange(-sum)
+
+final.data <- clean.tweets %>%
+  filter(word %in% good.words$word) %>%
+  pivot_wider(names_from = word,
+              values_from = n,
+              names_repair = "unique") %>%
+  replace(is.na(.), 0) 
+  
+sumdata <- order(colSums(final.data[,3:ncol(final.data)]), decreasing=TRUE)[1:50] 
+
+final.data.with.feature <- final.data %>% 
+  select(2,sumdata+2)
+```
+
+### The Random Forest Model
+After final data manipulation, we can finally train random forest model. The model is trained using the caret library, which allows us to select the model and its tuning parameters in an easy fashion. We decide to evaluate our model using specificity and false discovery rate. In our sentiment classification scenario, specificity measures how well our model can identify positive emotion tweets and false discovery rate measure our model's performance on classifying negative emotion tweets.Finally, we also added a computational time parameter as we want to train our model within a reasonable time. So, eventually we want our classification random forest to have high specificity, low false discovery rate and reasonable computation time. Considering the number of words in a given tweets in trimmed after our pre-process, we decide to limit our mtry value range from 1 to 20 and our minimum node size from 1 to 5. 
+
+We selected "ranger" package to implement the random forest algorithm. The "ranger" method allows us to tune three model parameters mtry, splitrule, and minimum node size. The mtry parameter allow us to determine the number of randomly selected predictors in each tree. The minimum node size allow us to determine the complexity of each individual tree and we fixed the split rule parameter for classification to "gini". 
+
+```{r train}
+set.seed(1)
+# randomly select 1000 observations
+random.rows <- sample(1:nrow(final.data.with.feature), 1000)
+
+mtry.vals <- 1:20
+min.node.size.vals <- 1:5
+
+# save evaluation parameters for tuneing parameters in 2-D data frame
+specificity.vec <- data.frame()
+false.discovery.rate.vec <- data.frame()
+time.vec <- data.frame()
+
+# train our model across mtry and node size parameters.
+for (i in 1:length(mtry.vals)) {
+  for(j in 1:length(min.node.size.vals)){
+    tfGrid <- expand.grid(mtry = i, 
+                       splitrule="gini",
+                       min.node.size = j)
+    
+    start.time<-proc.time()
+    rf <- train(ISnegative ~ ., 
+             data = final.data.with.feature[random.rows,], 
+             method = "ranger",
+             tuneGrid = tfGrid)
+    stop.time<-proc.time()
+    run.time<-stop.time - start.time
+    
+    prediction <- predict(rf, final.data.with.feature[random.rows,])
+    confusion <- table(prediction, final.data.with.feature[random.rows,]$ISnegative)
+    specificity <- confusion[1,1]/(confusion[2,1] + confusion[1,1])
+    false.discovery.rate <- confusion[1,2]/(confusion[1,2] + confusion[2,2])
+    
+    time.vec[i,j] = run.time[3]
+    specificity.vec[i,j] = specificity
+    false.discovery.rate.vec[i,j] = false.discovery.rate
+  }
+}
+```
+
+After obtaining the evaluation parameter values, we could then generate a plot to decide on the best model that according to its specificity, false discovery rate, and computation time. Since we have two tuning parameters, our plot have one tuning parameter on the x-axis, an evaluation parameter on the y-axis and another tuning parameter on the y-axis. 
+```{r model evaluation}
+colnames(specificity.vec)<- c(1:5)
+colnames(false.discovery.rate.vec) <-c(1:5)
+colnames(time.vec) <-c(1:5)
+
+specificity.metric<-specificity.vec %>% 
+  mutate(mtry = c(1:20)) %>% 
+  pivot_longer(!mtry, 
+              names_to="nodes", 
+              values_to ="specificity")
+
+p1 <- specificity.metric %>% 
+  ggplot() +
+  geom_line(aes(x=mtry, y=specificity, color=factor(nodes))) + 
+  xlab("mtry") +
+  ylab("specificity") +
+  ggtitle("specificity rate vs mtry over minimun node size")
+  
+false.discovery.rate.metric<-false.discovery.rate.vec %>% 
+  mutate(mtry = c(1:20)) %>% 
+  pivot_longer(!mtry, 
+              names_to="nodes", 
+              values_to ="false.discovery.rate")
+
+p2 <- false.discovery.rate.metric %>% 
+  ggplot() +
+  geom_line(aes(x=mtry, y=false.discovery.rate, color=factor(nodes))) +
+  xlab("mtry") +
+  ylab("false.discovery.rate") +
+  ggtitle("false discovery rate vs. mtry over minimun node size")
+  
+
+time.metric<-time.vec %>% 
+  mutate(mtry = c(1:20)) %>% 
+  pivot_longer(!mtry, 
+              names_to="nodes", 
+              values_to ="computation.time")
+
+p3 <- time.metric %>% 
+  ggplot() +
+  geom_line(aes(x=mtry, y=computation.time, color=factor(nodes))) +
+  xlab("mtry") +
+  ylab("computation time") +
+  ggtitle("computation time vs mtry over minimun node size")
+
+
+grid.arrange(p1, p2, p3, nrow = 3)
+```
+Our plot clearly shows a linear relationship between the number of randomly selected predictors and the total computation time. The computation time seems to be independent of number of nodes. There is also a clear relationship between mtry and false discovery rate, specifically the false discovery rate decrease as mtry increases. False discovery rate also seems to be independent of nodes. Finally, the relationship between mtry and specificity is more interesting as specificity first decrease then increase gradually. Further, in the case of specificity, the minimum node number does have a effect, where smaller number of minimum node seems to lead to higher specificity value when fixing mtry. 
+Thus, we conclude mtry is the tuning parameter that leads to large change in model performance will minimum nodes have a lesser effect. To select the optimal random forest model we want a mtry value above 10 to have relatively high specificity and low false discovery rate, at the same time we want to limit mtry value below 15 to limit computation time, which could matter more if we train our model on the entire 10,000+ tweets. Therefore, we decided that our optimal model would have randomly selected predictors equal to 12 and minimum node size 1. 
+
+```{r variable importance}
+rf <- train(ISnegative ~ ., 
+         data = final.data.with.feature[random.rows,], 
+         method = "rf")
+
+rangerImp <- varImp(rf, scale = TRUE)
+plot(rangerImp, top = 20)
+```
+
+Using the caret library also allows us to understand the importance difference predictors, albeit through a different implementation of random forest 'rf'.  We can see from the scaled importance plot that the world 'crisis' have the highest importance score. This would means that the word have the largest predictive power when it comes to negative sentiment about COVID Indeed, when we think about real life situations, crisis would likely to be a word for the tweet writer to describe the COVID-19 while writer with positive emotions would certainly describe the same event with more neural words like 'pandemic'. Similarly, we could realize through statistical learning random forest does gained ability to understand human emotions. We can clearly see that the words that are ranked high on the importance table (e.g. panic, food, stop, oil) do seem to be words that we associate with negative situations or scenario during the pandemic. 
+
